@@ -20,6 +20,7 @@ from aiogram.types import BusinessConnection, Message
 
 from .claude_cli import ClaudeCLI, ClaudeError, ClaudeLimitError
 from .config import Settings
+from .edutizim import BalanceLookup, EduTizimClient
 from .language import detect_language
 from .prompts import SKIP_TOKEN, build_system_prompt, build_user_prompt
 from .store import HistoryStore, JsonFile, RuntimeState, SeenMessages, ensure_private_dir
@@ -157,8 +158,10 @@ class Assistant:
         *,
         clock: Callable[[], float] = time.time,
         preview_sink: Callable[[Preview], None] = print_preview,
+        balance_lookup: Optional[BalanceLookup] = None,
     ) -> None:
         self.settings = settings
+        self.balance_lookup = balance_lookup
         self.generator = generator
         self.clock = clock
         self.preview_sink = preview_sink
@@ -241,8 +244,13 @@ class Assistant:
             if blocked is not None:
                 return blocked
 
+            history = self.history.get(conn_id, chat_id)
+            crm_note = None
+            if self.balance_lookup is not None:
+                recent = "\n".join(i["text"] for i in history[-6:] if i.get("role") == "other")
+                crm_note = await self.balance_lookup.note_for(key, text, recent)
             system_prompt = build_system_prompt(read_profile(self.settings.profile_path), datetime.fromtimestamp(now))
-            user_prompt = build_user_prompt(self.history.get(conn_id, chat_id), language)
+            user_prompt = build_user_prompt(history, language, crm_note)
             try:
                 reply = await self.generator.generate(system_prompt, user_prompt)
             except ClaudeLimitError as exc:
@@ -447,5 +455,18 @@ def make_claude_cli(settings: Settings) -> ClaudeCLI:
     )
 
 
+def make_balance_lookup(settings: Settings) -> Optional[BalanceLookup]:
+    if not settings.edutizim_enabled:
+        return None
+    client = EduTizimClient(
+        settings.edutizim_api_key or "",
+        settings.edutizim_token or "",
+        branch_ids=settings.edutizim_branch_ids,
+        base_url=settings.edutizim_base_url,
+    )
+    return BalanceLookup(client)
+
+
 def build_assistant(settings: Settings, **kwargs: Any) -> Assistant:
+    kwargs.setdefault("balance_lookup", make_balance_lookup(settings))
     return Assistant(settings, make_claude_cli(settings), **kwargs)

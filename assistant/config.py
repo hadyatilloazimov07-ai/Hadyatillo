@@ -17,7 +17,7 @@ import shutil
 import stat
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Mapping, Optional
+from typing import Dict, Mapping, Optional, Tuple
 
 from dotenv import dotenv_values
 
@@ -37,6 +37,10 @@ SETTING_KEYS = (
     "HISTORY_LIMIT",
     "DATA_DIR",
     "PROFILE_PATH",
+    "EDUTIZIM_API_KEY",
+    "EDUTIZIM_TOKEN",
+    "EDUTIZIM_BRANCH_IDS",
+    "EDUTIZIM_BASE_URL",
 )
 
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
@@ -69,6 +73,14 @@ class Settings:
     profile_path: Path
     claude_oauth_token: Optional[str] = field(default=None, repr=False)
     from_environment: bool = False
+    edutizim_api_key: Optional[str] = field(default=None, repr=False)
+    edutizim_token: Optional[str] = field(default=None, repr=False)
+    edutizim_branch_ids: Tuple[str, ...] = ()
+    edutizim_base_url: str = "https://backend.edutizim.uz/external-api"
+
+    @property
+    def edutizim_enabled(self) -> bool:
+        return bool(self.edutizim_api_key and self.edutizim_token)
 
     @property
     def claude_auth_mode(self) -> str:
@@ -188,6 +200,20 @@ def load_settings(
     if effort not in EFFORT_LEVELS:
         raise ConfigError(f"CLAUDE_EFFORT must be one of {', '.join(EFFORT_LEVELS)} (check {where})")
 
+    edu_key = get("EDUTIZIM_API_KEY").strip() or None
+    edu_token = get("EDUTIZIM_TOKEN").strip() or None
+    for key, value in (("EDUTIZIM_API_KEY", edu_key), ("EDUTIZIM_TOKEN", edu_token)):
+        if value and any(ch.isspace() for ch in value):
+            raise ConfigError(f"{key} must be on a single line without spaces (check {where})")
+    if bool(edu_key) != bool(edu_token):
+        raise ConfigError(f"Set both EDUTIZIM_API_KEY and EDUTIZIM_TOKEN, or neither (check {where})")
+    branch_ids = tuple(b.strip() for b in get("EDUTIZIM_BRANCH_IDS").split(",") if b.strip())
+    if any(not re.fullmatch(r"[0-9a-fA-F]{24}", b) for b in branch_ids):
+        raise ConfigError(f"EDUTIZIM_BRANCH_IDS must be comma-separated 24-character ids (check {where})")
+    base_url = get("EDUTIZIM_BASE_URL").strip() or "https://backend.edutizim.uz/external-api"
+    if not base_url.startswith("https://"):
+        raise ConfigError(f"EDUTIZIM_BASE_URL must start with https:// (check {where})")
+
     return Settings(
         bot_token=bot_token,
         owner_id=owner_id,
@@ -203,6 +229,10 @@ def load_settings(
         profile_path=_path(get("PROFILE_PATH"), "profile.md", base),
         claude_oauth_token=_oauth_token(get("CLAUDE_CODE_OAUTH_TOKEN"), where),
         from_environment=from_environment,
+        edutizim_api_key=edu_key,
+        edutizim_token=edu_token,
+        edutizim_branch_ids=branch_ids,
+        edutizim_base_url=base_url,
     )
 
 

@@ -71,6 +71,25 @@ claude -p --safe-mode --settings '{"disableAllHooks":true,"enabledPlugins":{...:
   A rejected token gives a message with `CLI said: ...` so you can see why.
 - `python bot.py --check-claude` proves all of this with a tiny request.
 
+## EduTizim balance lookup (optional)
+
+When `EDUTIZIM_API_KEY` and `EDUTIZIM_TOKEN` are set, a student can ask for
+their balance. The lookup is done by the bot's own code, not by Claude:
+
+- it only runs when the latest message contains a phone number;
+- the student is searched by that phone in EduTizim (External API,
+  `student-list/students-pagin`) and accepted only if the **first and last name**
+  written in the chat match the record;
+- only that student's name and balance go into the prompt (inside a
+  `<crm_lookup>` block the chat cannot fake); parents' phones etc. never do;
+- at most 5 lookups per chat per day.
+
+Setup: `python edutizim_login.py` asks for the EduTizim apiKey and a staff login
+(hidden input) and saves `EDUTIZIM_API_KEY`, `EDUTIZIM_TOKEN`,
+`EDUTIZIM_BRANCH_IDS` in `.env`. For Railway, copy each value with
+`python edutizim_login.py --copy EDUTIZIM_TOKEN` (and the others) and add it as
+a Variable. Use a staff account with read-only rights if EduTizim allows it.
+
 ## Deploy to Railway
 
 1. On a computer with a browser run `claude setup-token`, approve with your
@@ -155,6 +174,8 @@ assistant/prompts.py       system and user prompts
 assistant/store.py         history, seen messages, runtime state (JSON in data/)
 assistant/service.py       business message logic, preview / auto-send
 assistant/handlers.py      aiogram router
+assistant/edutizim.py      read-only EduTizim balance lookup
+edutizim_login.py          saves EduTizim credentials into .env
 profile.md                 who you are (template, fill it in)
 Dockerfile, railway.json   Railway build and deploy
 tests/                     offline tests

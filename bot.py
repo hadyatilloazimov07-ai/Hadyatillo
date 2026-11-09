@@ -24,7 +24,7 @@ from assistant.claude_cli import ClaudeError
 from assistant.config import PROJECT_DIR, SETTING_KEYS, ConfigError, Settings, env_file_warning, load_settings
 from assistant.language import detect_language
 from assistant.prompts import SKIP_TOKEN, build_system_prompt, build_user_prompt
-from assistant.service import build_assistant, make_claude_cli, profile_is_empty, read_profile
+from assistant.service import build_assistant, make_balance_lookup, make_claude_cli, profile_is_empty, read_profile
 from assistant.store import ensure_private_dir
 
 ENV_FILE = PROJECT_DIR / ".env"
@@ -93,13 +93,19 @@ async def run_try(settings: Settings, text: str) -> int:
     cli = make_claude_cli(settings)
     language = detect_language(text)
     system_prompt = build_system_prompt(read_profile(settings.profile_path), datetime.now())
-    user_prompt = build_user_prompt([{"role": "other", "name": "Friend", "text": text}], language)
+    crm_note = None
+    lookup = make_balance_lookup(settings)
+    if lookup is not None:
+        crm_note = await lookup.note_for("try", text, text)
+    user_prompt = build_user_prompt([{"role": "other", "name": "Friend", "text": text}], language, crm_note)
     try:
         reply = await cli.generate(system_prompt, user_prompt)
     except ClaudeError as exc:
         print(f"Claude error: {exc}", file=sys.stderr)
         return 1
     print(f"Language hint: {language or 'unknown'}")
+    if crm_note:
+        print(f"EduTizim:      {crm_note}")
     print(f"Message:       {text}")
     print(f"Reply:         {reply if reply != SKIP_TOKEN else '(no reply needed: ' + SKIP_TOKEN + ')'}")
     return 0
@@ -126,6 +132,10 @@ async def run_bot(settings: Settings) -> int:
             log.info("Mode: PREVIEW - replies are only shown in the logs (set AUTO_SEND=true to send)")
         log.info("Claude auth: %s", settings.claude_auth_mode)
         log.info("Claude binary: %s", settings.claude_bin)
+        if settings.edutizim_enabled:
+            log.info("EduTizim balance lookup: ON (%s)", settings.edutizim_base_url)
+        else:
+            log.info("EduTizim balance lookup: off (EDUTIZIM_API_KEY / EDUTIZIM_TOKEN not set)")
         if assistant.state.paused:
             log.warning("The bot starts PAUSED; send /resume to the bot to continue")
         if profile_is_empty(settings.profile_path):

@@ -39,6 +39,8 @@ STRIPPED_ENV_KEYS = (
     "CLAUDECODE",
     "CLAUDE_CODE_ENTRYPOINT",
     "CLAUDE_CODE_SIMPLE",  # set by --bare; disables OAuth login
+    "EDUTIZIM_API_KEY",
+    "EDUTIZIM_TOKEN",
 )
 
 ISOLATION_ENV = {
