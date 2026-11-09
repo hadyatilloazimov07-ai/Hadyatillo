@@ -19,6 +19,8 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import aiohttp
 
+from .store import JsonFile
+
 log = logging.getLogger("edutizim")
 
 DEFAULT_BASE_URL = "https://backend.edutizim.uz/external-api"
@@ -44,6 +46,14 @@ _MONEY_STEMS = (
     "spisa", "schet",
 )
 _LESSON_TYPES = {"attendance", "cancelled", "unpaidAttendanceCancelled"}
+
+
+ASK_FOR_IDENTITY = (
+    "The balance can be checked automatically, but this chat has not identified a student yet. "
+    "Do not say you cannot see the balance and do not say the owner will write later. Ask them to send "
+    "the phone number registered at the learning centre together with the student's first and last name, "
+    "and say you will check the balance right away."
+)
 
 
 class EduTizimError(Exception):
@@ -319,14 +329,31 @@ class BalanceLookup:
         clock=time.time,
         per_day: int = LOOKUPS_PER_CHAT_PER_DAY,
         followups_per_day: int = FOLLOWUPS_PER_CHAT_PER_DAY,
+        path: Optional[Any] = None,
     ) -> None:
         self.client = client
+        self._file = JsonFile(path) if path is not None else None
         self.clock = clock
         self.per_day = per_day
         self.followups_per_day = followups_per_day
         self._calls: Dict[str, List[float]] = {}
         self._followups: Dict[str, List[float]] = {}
         self._verified: Dict[str, _Verified] = {}
+        if self._file is not None:
+            saved = self._file.read({})
+            for key, value in (saved.items() if isinstance(saved, dict) else []):
+                try:
+                    self._verified[key] = _Verified(str(value["phone9"]), str(value["student_id"]), float(value["since"]))
+                except (KeyError, TypeError, ValueError):
+                    continue
+
+    def _save(self) -> None:
+        if self._file is not None:
+            now = self.clock()
+            self._file.write({
+                k: {"phone9": v.phone9, "student_id": v.student_id, "since": v.since}
+                for k, v in self._verified.items() if now - v.since <= VERIFIED_SECONDS
+            })
 
     def _allow(self, bucket: Dict[str, List[float]], chat_key: str, limit: int) -> bool:
         now = self.clock()
@@ -347,11 +374,14 @@ class BalanceLookup:
             return await self._lookup(chat_key, context_text, phone9, None)
 
         verified = self._verified.get(chat_key)
-        if verified is None or self.clock() - verified.since > VERIFIED_SECONDS:
+        if verified is not None and self.clock() - verified.since > VERIFIED_SECONDS:
             self._verified.pop(chat_key, None)
-            return None
+            self._save()
+            verified = None
         if not asks_about_money(latest_text):
             return None
+        if verified is None:
+            return ASK_FOR_IDENTITY
         if not self._allow(self._followups, chat_key, self.followups_per_day):
             return "Too many balance checks from this chat today. Say you will check and write back later."
         return await self._lookup(chat_key, context_text, verified.phone9, verified.student_id)
@@ -369,4 +399,5 @@ class BalanceLookup:
             previous = self._verified.get(chat_key)
             since = previous.since if previous and previous.student_id == result.student_id else self.clock()
             self._verified[chat_key] = _Verified(phone9, result.student_id, since)
+            self._save()
         return describe_balance(result)

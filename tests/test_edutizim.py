@@ -10,6 +10,7 @@ from assistant.edutizim import (
     BalanceLookup,
     EduTizimClient,
     EduTizimError,
+    ASK_FOR_IDENTITY,
     StudentBalance,
     asks_about_money,
     summarize_transactions,
@@ -125,7 +126,9 @@ async def test_client_auth_error(fake_edutizim):
 
 async def test_lookup_note_only_shows_matched_student(fake_edutizim):
     lookup = BalanceLookup(client_for(fake_edutizim, branch_ids=[BRANCH_A]))
-    assert await lookup.note_for("chat", "balansimni ko'rib bering", "") is None  # no phone, no lookup
+    # no phone yet: no EduTizim call, the bot is told to ask for phone and name
+    assert await lookup.note_for("chat", "balansimni ko'rib bering", "") == ASK_FOR_IDENTITY
+    assert fake_edutizim.seen == []
     note = await lookup.note_for("chat", "908467800 hikmatillo azimov", "908467800 hikmatillo azimov")
     assert "Hikmatillo Azimov" in note and "200 000" in note
     assert "+998900000000" not in note and "Valiyev" not in note
@@ -145,7 +148,8 @@ async def test_assistant_puts_balance_into_prompt(make_harness, fake_edutizim):
     h.assistant.balance_lookup = BalanceLookup(client_for(fake_edutizim, branch_ids=[BRANCH_A]))
     await h.connect()
     await h.business_message("Balansimni ko'rib bering", message_id=1)
-    assert "<crm_lookup>" not in h.generator.calls[0]["user"]
+    first = h.generator.calls[0]["user"]
+    assert "Ask them to send the phone number" in first and "200 000" not in first
     await h.business_message("908467800 hikmatillo azimov", message_id=2)
     prompt = h.generator.calls[1]["user"]
     assert "<crm_lookup>" in prompt and "debt of 200 000" in prompt
@@ -246,17 +250,27 @@ async def test_match_includes_history(fake_edutizim):
 async def test_followup_question_after_verification(fake_edutizim):
     clock = [1_800_000_000.0]
     lookup = BalanceLookup(client_for(fake_edutizim, branch_ids=[BRANCH_A]), clock=lambda: clock[0])
-    assert await lookup.note_for("chat", "To'lovim nimaga bunday?", "") is None  # not verified yet
+    first = await lookup.note_for("chat", "To'lovim nimaga bunday?", "")  # not verified yet
+    assert first == ASK_FOR_IDENTITY
     await lookup.note_for("chat", "908467800 hikmatillo azimov", "908467800 hikmatillo azimov")
     note = await lookup.note_for("chat", "To'lovim nimaga bunday?", "To'lovim nimaga bunday?")
     assert note and "Hikmatillo Azimov" in note and "Transaction history" in note
     assert await lookup.note_for("chat", "Rahmat", "Rahmat") is None  # not about money
-    assert await lookup.note_for("other-chat", "To'lovim nimaga bunday?", "") is None  # per chat
+    assert await lookup.note_for("other-chat", "To'lovim nimaga bunday?", "") == ASK_FOR_IDENTITY  # per chat
     clock[0] += 25 * 3600
-    assert await lookup.note_for("chat", "To'lovim nimaga bunday?", "") is None  # verification expired
+    assert await lookup.note_for("chat", "To'lovim nimaga bunday?", "") == ASK_FOR_IDENTITY  # expired
 
 
 async def test_wrong_name_does_not_verify(fake_edutizim):
     lookup = BalanceLookup(client_for(fake_edutizim, branch_ids=[BRANCH_A]))
     await lookup.note_for("chat", "908467800 ali valiyev", "908467800 ali valiyev")
-    assert await lookup.note_for("chat", "balansim qancha?", "") is None
+    assert await lookup.note_for("chat", "balansim qancha?", "") == ASK_FOR_IDENTITY
+
+
+async def test_verified_chats_survive_restart(fake_edutizim, tmp_path):
+    path = tmp_path / "verified.json"
+    lookup = BalanceLookup(client_for(fake_edutizim, branch_ids=[BRANCH_A]), path=path)
+    await lookup.note_for("chat", "908467800 hikmatillo azimov", "908467800 hikmatillo azimov")
+    restarted = BalanceLookup(client_for(fake_edutizim, branch_ids=[BRANCH_A]), path=path)
+    note = await restarted.note_for("chat", "balansim qancha?", "")
+    assert note and "Hikmatillo Azimov" in note

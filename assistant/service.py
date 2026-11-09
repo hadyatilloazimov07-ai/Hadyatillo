@@ -467,7 +467,7 @@ def make_balance_lookup(settings: Settings) -> Optional[BalanceLookup]:
         branch_ids=settings.edutizim_branch_ids,
         base_url=settings.edutizim_base_url,
     )
-    return BalanceLookup(client)
+    return BalanceLookup(client, path=settings.data_dir / "verified_students.json")
 
 
 def build_assistant(settings: Settings, **kwargs: Any) -> Assistant:
