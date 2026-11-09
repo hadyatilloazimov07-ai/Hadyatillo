@@ -3,7 +3,9 @@
 The lookup is done by this code, never by Claude: when a chat message contains
 a phone number, the student is searched by that phone in EduTizim and is only
 accepted if the first AND last name written in the chat match the record.
-Only the student's name and balance are passed on to the prompt.
+After that the chat counts as verified for a day: follow-up questions about
+payments get the student's balance and a compact transaction history again.
+Only that student's name, balance and history are passed on to the prompt.
 """
 from __future__ import annotations
 
@@ -11,8 +13,9 @@ import asyncio
 import logging
 import re
 import time
-from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import aiohttp
 
@@ -20,6 +23,10 @@ log = logging.getLogger("edutizim")
 
 DEFAULT_BASE_URL = "https://backend.edutizim.uz/external-api"
 LOOKUPS_PER_CHAT_PER_DAY = 5
+FOLLOWUPS_PER_CHAT_PER_DAY = 20
+VERIFIED_SECONDS = 24 * 3600
+HISTORY_ROWS = 40
+LOCAL_TZ = timezone(timedelta(hours=5))  # Uzbekistan
 
 _PHONE_RE = re.compile(r"(?:\+?\s*998[\s\-()]*)?(\d{2})[\s\-()]*(\d{3})[\s\-]*(\d{2})[\s\-]*(\d{2})(?!\d)")
 _APOS_RE = re.compile(r"['ʻ’‘`ʼ]")
@@ -30,6 +37,13 @@ _CYR = {
     "ъ": "", "ы": "i", "ь": "", "э": "e", "ю": "yu", "я": "ya", "ў": "o", "қ": "q", "ғ": "g",
     "ҳ": "h",
 }
+# Word stems (after _normalise_word) that mean "this is about money / my balance".
+_MONEY_STEMS = (
+    "tolov", "tolad", "tolag", "balans", "pul", "qarz", "nimaga", "nega", "tushuntir", "xisob",
+    "summa", "yechil", "yechib", "oplat", "plat", "dolg", "pochemu", "dengi",
+    "spisa", "schet",
+)
+_LESSON_TYPES = {"attendance", "cancelled", "unpaidAttendanceCancelled"}
 
 
 class EduTizimError(Exception):
@@ -40,6 +54,9 @@ class EduTizimError(Exception):
 class StudentBalance:
     full_name: str
     balance: float
+    student_id: str = ""
+    branch: str = ""
+    history: List[str] = field(default_factory=list)
 
 
 def extract_phone(text: str) -> Optional[str]:
@@ -70,8 +87,87 @@ def names_match(text: str, first_name: str, last_name: str) -> bool:
     return all(w in words for w in first) and all(w in words for w in last)
 
 
+def asks_about_money(text: str) -> bool:
+    return any(w.startswith(stem) for w in _words(text) for stem in _MONEY_STEMS)
+
+
 def _digits(phone: str) -> str:
     return re.sub(r"\D", "", phone or "")[-9:]
+
+
+def format_amount(value: float) -> str:
+    return f"{abs(value):,.0f}".replace(",", " ")
+
+
+def _signed(value: float) -> str:
+    return ("+" if value > 0 else "-" if value < 0 else "") + format_amount(value)
+
+
+def _date(raw: Any) -> str:
+    try:
+        parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return str(raw)[:10]
+    return parsed.astimezone(LOCAL_TZ).strftime("%Y-%m-%d")
+
+
+def _delta(row: Dict[str, Any]) -> float:
+    before, after = row.get("beforeAmount"), row.get("afterAmount")
+    if isinstance(before, (int, float)) and isinstance(after, (int, float)):
+        return float(after) - float(before)
+    amount = row.get("amount")
+    return float(amount) if isinstance(amount, (int, float)) else 0.0
+
+
+def _name_of(value: Any) -> str:
+    if isinstance(value, dict):
+        return str(value.get("name") or "")
+    return str(value or "")
+
+
+def summarize_transactions(rows: List[Dict[str, Any]]) -> List[str]:
+    """Rows oldest first -> short lines; consecutive lesson charges are grouped."""
+    lines: List[str] = []
+    run: List[Dict[str, Any]] = []
+
+    def flush() -> None:
+        if not run:
+            return
+        start = run[0].get("beforeAmount")
+        end = run[-1].get("afterAmount")
+        groups: Dict[Tuple[str, str, str], List[float]] = {}
+        for row in run:
+            key = (_name_of(row.get("group")) or "group", str(row.get("typeLabel") or row.get("type")),
+                   str(row.get("attendanceStateLabel") or ""))
+            groups.setdefault(key, []).append(_delta(row))
+        parts = []
+        for (group, label, state), deltas in groups.items():
+            state_txt = f", status '{state}'" if state else ""
+            parts.append(f"{len(deltas)} x '{label}' in group '{group}'{state_txt}: {_signed(sum(deltas))} so'm")
+        first, last = _date(run[0].get("createdAt")), _date(run[-1].get("createdAt"))
+        when = first if first == last else f"{first} .. {last}"
+        balance = ""
+        if isinstance(start, (int, float)) and isinstance(end, (int, float)):
+            balance = f" (balance {_signed(start)} -> {_signed(end)})"
+        net = sum(_delta(row) for row in run)
+        lines.append(f"- {when}: lessons: " + "; ".join(parts) + f"; net change {_signed(net)} so'm" + balance)
+        run.clear()
+
+    for row in rows:
+        if row.get("type") in _LESSON_TYPES:
+            run.append(row)
+            continue
+        flush()
+        label = str(row.get("typeLabel") or row.get("type") or "transaction")
+        method = _name_of(row.get("paymentMethod"))
+        method_txt = f" ({method})" if method else ""
+        before, after = row.get("beforeAmount"), row.get("afterAmount")
+        balance = ""
+        if isinstance(before, (int, float)) and isinstance(after, (int, float)):
+            balance = f" (balance {_signed(before)} -> {_signed(after)})"
+        lines.append(f"- {_date(row.get('createdAt'))}: '{label}'{method_txt}: {_signed(_delta(row))} so'm{balance}")
+    flush()
+    return lines
 
 
 class EduTizimClient:
@@ -138,21 +234,42 @@ class EduTizimClient:
             )
             for item in (data or {}).get("data", []) if isinstance(data, dict) else []:
                 if isinstance(item, dict) and _digits(item.get("phoneNumber", "")) == phone9:
-                    results.append(item)
+                    results.append(dict(item, _branch=branch))
         return results
 
-    async def balance_for(self, text: str, phone9: str) -> Optional[StudentBalance]:
+    async def transactions(self, student_id: str, branch: str, limit: int = HISTORY_ROWS) -> List[Dict[str, Any]]:
+        """Newest `limit` transactions, returned oldest first."""
+        data = await self._request(
+            "POST", "student/transactions-pagin", branch=branch,
+            json={"studentId": student_id, "page": 1, "limit": limit, "sortBy": "createdAt", "sortOrder": -1},
+        )
+        rows = (data or {}).get("data", []) if isinstance(data, dict) else []
+        rows = [r for r in rows if isinstance(r, dict)]
+        rows.sort(key=lambda r: str(r.get("createdAt") or ""))
+        return rows
+
+    async def balance_for(self, text: str, phone9: str, student_id: Optional[str] = None) -> Optional[StudentBalance]:
+        """Find the student by phone; accept by name match (or by a known id)."""
         for item in await self.find_students(phone9):
             first, last = str(item.get("firstName") or ""), str(item.get("lastName") or "")
-            if names_match(text, first, last):
-                balance = item.get("balance")
-                if isinstance(balance, (int, float)):
-                    return StudentBalance(f"{first} {last}".strip(), float(balance))
+            accepted = (student_id and item.get("_id") == student_id) or (
+                not student_id and names_match(text, first, last)
+            )
+            balance = item.get("balance")
+            if accepted and isinstance(balance, (int, float)):
+                return StudentBalance(
+                    f"{first} {last}".strip(), float(balance), str(item.get("_id") or ""), item["_branch"]
+                )
         return None
 
-
-def format_amount(value: float) -> str:
-    return f"{abs(value):,.0f}".replace(",", " ")
+    async def with_history(self, result: StudentBalance) -> StudentBalance:
+        if result.student_id and result.branch:
+            try:
+                rows = await self.transactions(result.student_id, result.branch)
+                result.history = summarize_transactions(rows)
+            except EduTizimError as exc:
+                log.warning("Could not read transactions: %s", exc)
+        return result
 
 
 def describe_balance(result: Optional[StudentBalance], error: Optional[str] = None) -> str:
@@ -171,33 +288,85 @@ def describe_balance(result: Optional[StudentBalance], error: Optional[str] = No
         state = f"prepaid credit of {format_amount(result.balance)} so'm"
     else:
         state = "zero balance (no debt, nothing prepaid)"
-    return f'Student "{result.full_name}": balance {result.balance:.0f} so\'m, i.e. {state}.'
+    note = f'Student "{result.full_name}": current balance {result.balance:.0f} so\'m, i.e. {state}.'
+    if result.history:
+        note += (
+            "\nTransaction history (oldest first, most recent part only; amounts change the balance by the "
+            "sign shown):\n" + "\n".join(result.history) + "\n"
+            "If they only asked for the balance, give just the balance. If they ask why the balance is like "
+            "this, explain it from this history in plain words: when and how much they paid, how many lessons "
+            "were charged in which group and for how much, any refunds or cancelled charges, and how that "
+            "leads to the current balance. The numbers you give must add up exactly (start balance + changes = current balance); a lesson whose status says it was cancelled but still has a minus amount was charged, and a separate 'cancelled' line with a plus amount gave that money back. Translate the labels into the reply language. Never mention staff "
+            "names, internal ids or other students."
+        )
+    return note
+
+
+@dataclass
+class _Verified:
+    phone9: str
+    student_id: str
+    since: float
 
 
 class BalanceLookup:
     """Rate-limited lookups for the assistant (per chat)."""
 
-    def __init__(self, client: EduTizimClient, *, clock=time.time, per_day: int = LOOKUPS_PER_CHAT_PER_DAY) -> None:
+    def __init__(
+        self,
+        client: EduTizimClient,
+        *,
+        clock=time.time,
+        per_day: int = LOOKUPS_PER_CHAT_PER_DAY,
+        followups_per_day: int = FOLLOWUPS_PER_CHAT_PER_DAY,
+    ) -> None:
         self.client = client
         self.clock = clock
         self.per_day = per_day
+        self.followups_per_day = followups_per_day
         self._calls: Dict[str, List[float]] = {}
+        self._followups: Dict[str, List[float]] = {}
+        self._verified: Dict[str, _Verified] = {}
+
+    def _allow(self, bucket: Dict[str, List[float]], chat_key: str, limit: int) -> bool:
+        now = self.clock()
+        calls = [t for t in bucket.get(chat_key, []) if now - t < 86400]
+        if len(calls) >= limit:
+            bucket[chat_key] = calls
+            return False
+        calls.append(now)
+        bucket[chat_key] = calls
+        return True
 
     async def note_for(self, chat_key: str, latest_text: str, context_text: str) -> Optional[str]:
         phone9 = extract_phone(latest_text)
-        if phone9 is None:
+        if phone9 is not None:
+            if not self._allow(self._calls, chat_key, self.per_day):
+                log.warning("Chat %s: EduTizim lookup limit reached", chat_key)
+                return "Too many balance checks from this chat today. Say you will check and write back later."
+            return await self._lookup(chat_key, context_text, phone9, None)
+
+        verified = self._verified.get(chat_key)
+        if verified is None or self.clock() - verified.since > VERIFIED_SECONDS:
+            self._verified.pop(chat_key, None)
             return None
-        now = self.clock()
-        calls = [t for t in self._calls.get(chat_key, []) if now - t < 86400]
-        if len(calls) >= self.per_day:
-            log.warning("Chat %s: EduTizim lookup limit reached", chat_key)
+        if not asks_about_money(latest_text):
+            return None
+        if not self._allow(self._followups, chat_key, self.followups_per_day):
             return "Too many balance checks from this chat today. Say you will check and write back later."
-        calls.append(now)
-        self._calls[chat_key] = calls
+        return await self._lookup(chat_key, context_text, verified.phone9, verified.student_id)
+
+    async def _lookup(self, chat_key: str, text: str, phone9: str, student_id: Optional[str]) -> str:
         try:
-            result = await self.client.balance_for(context_text, phone9)
+            result = await self.client.balance_for(text, phone9, student_id)
+            if result is not None:
+                result = await self.client.with_history(result)
         except EduTizimError as exc:
             log.error("Chat %s: %s", chat_key, exc)
             return describe_balance(None, error=str(exc))
         log.info("Chat %s: EduTizim lookup %s", chat_key, "matched" if result else "no match")
+        if result is not None and result.student_id:
+            previous = self._verified.get(chat_key)
+            since = previous.since if previous and previous.student_id == result.student_id else self.clock()
+            self._verified[chat_key] = _Verified(phone9, result.student_id, since)
         return describe_balance(result)

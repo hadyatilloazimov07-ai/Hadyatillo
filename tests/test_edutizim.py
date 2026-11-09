@@ -11,6 +11,8 @@ from assistant.edutizim import (
     EduTizimClient,
     EduTizimError,
     StudentBalance,
+    asks_about_money,
+    summarize_transactions,
     describe_balance,
     extract_phone,
     names_match,
@@ -20,9 +22,9 @@ from assistant.service import make_balance_lookup
 
 BRANCH_A = "62c6a8e25a8345f511208f44"
 BRANCH_B = "62c6a8e25a8345f511208f45"
-STUDENT = {"firstName": "Hikmatillo", "lastName": "Azimov", "phoneNumber": "+998908467800", "balance": -200000,
+STUDENT = {"_id": "6986b000598ccffd5569f296", "firstName": "Hikmatillo", "lastName": "Azimov", "phoneNumber": "+998908467800", "balance": -200000,
            "parent": {"fatherPhoneNumber": "+998900000000"}}
-OTHER = {"firstName": "Ali", "lastName": "Valiyev", "phoneNumber": "+998901112233", "balance": 50000}
+OTHER = {"_id": "6986b000598ccffd5569f297", "firstName": "Ali", "lastName": "Valiyev", "phoneNumber": "+998901112233", "balance": 50000}
 
 
 @pytest.mark.parametrize(
@@ -71,12 +73,19 @@ async def fake_edutizim():
             data = []
         return web.json_response({"code": 0, "message": "Success", "data": {"total": len(data), "data": data}})
 
+    async def transactions(request):
+        body = await request.json()
+        seen.append({"headers": dict(request.headers), "body": body, "path": "transactions"})
+        rows = TRANSACTIONS if body.get("studentId") == STUDENT["_id"] else []
+        return web.json_response({"code": 0, "data": {"total": len(rows), "data": list(reversed(rows))}})
+
     async def branches(request):
         return web.json_response({"code": 0, "data": [{"_id": BRANCH_A, "name": "A"}, {"_id": BRANCH_B, "name": "B"}]})
 
     app = web.Application()
     app.router.add_post("/external-api/student-list/students-pagin", students)
     app.router.add_get("/external-api/branches", branches)
+    app.router.add_post("/external-api/student/transactions-pagin", transactions)
     server = TestServer(app)
     await server.start_server()
     server.seen = seen
@@ -91,7 +100,8 @@ def client_for(server, key="dev:key", branch_ids=()):
 async def test_client_finds_balance_with_matching_name(fake_edutizim):
     client = client_for(fake_edutizim)
     result = await client.balance_for("908467800 hikmatillo azimov", "908467800")
-    assert result == StudentBalance("Hikmatillo Azimov", -200000.0)
+    assert (result.full_name, result.balance, result.student_id, result.branch) == (
+        "Hikmatillo Azimov", -200000.0, STUDENT["_id"], BRANCH_A)
     assert client.branch_ids == [BRANCH_A, BRANCH_B]  # discovered from /branches
     request = fake_edutizim.seen[0]
     assert request["headers"]["apiKey"] == "dev:key"
@@ -182,3 +192,71 @@ def test_edutizim_secrets_not_passed_to_claude(monkeypatch):
     monkeypatch.setenv("EDUTIZIM_TOKEN", "t")
     env = build_env()
     assert "EDUTIZIM_API_KEY" not in env and "EDUTIZIM_TOKEN" not in env
+
+
+TRANSACTIONS = [  # oldest first, shaped like the real API
+    {"type": "income", "typeLabel": "Daromad", "amount": 145000, "beforeAmount": -60000, "afterAmount": 85000,
+     "createdAt": "2026-09-10T06:00:00.000Z", "paymentMethod": {"name": "Naqd"},
+     "moderator": {"firstName": "Staff"}},
+    {"type": "attendance", "typeLabel": "Dars uchun yechim", "attendanceStateLabel": "Qatnashdi", "amount": -20000,
+     "beforeAmount": 85000, "afterAmount": 65000, "createdAt": "2026-09-16T10:00:00.000Z",
+     "group": {"name": "MA Sejong 2"}},
+    {"type": "attendance", "typeLabel": "Dars uchun yechim", "attendanceStateLabel": "Sababsiz", "amount": -20000,
+     "beforeAmount": 65000, "afterAmount": 45000, "createdAt": "2026-09-18T10:00:00.000Z",
+     "group": {"name": "MA Sejong 2"}},
+    {"type": "return", "typeLabel": "Pul qaytarildi", "amount": -45000, "beforeAmount": 45000, "afterAmount": 0,
+     "createdAt": "2026-10-01T06:00:00.000Z", "paymentMethod": {"name": "Naqd"}},
+    {"type": "attendance", "typeLabel": "Dars uchun yechim", "attendanceStateLabel": "Qatnashdi", "amount": -20000,
+     "beforeAmount": 0, "afterAmount": -20000, "createdAt": "2026-10-12T10:00:00.000Z",
+     "group": {"name": "XD Sejong 2"}},
+    {"type": "cancelled", "typeLabel": "Bekor qilingan", "attendanceStateLabel": "Bekor qilindi", "amount": -20000,
+     "beforeAmount": -20000, "afterAmount": 0, "createdAt": "2026-10-13T10:00:00.000Z",
+     "group": {"name": "XD Sejong 2"}},
+]
+
+
+def test_summarize_transactions():
+    lines = summarize_transactions(TRANSACTIONS)
+    assert lines[0] == "- 2026-09-10: 'Daromad' (Naqd): +145 000 so'm (balance -60 000 -> +85 000)"
+    assert lines[1].startswith("- 2026-09-16 .. 2026-09-18: lessons:")
+    assert "1 x 'Dars uchun yechim' in group 'MA Sejong 2', status 'Qatnashdi': -20 000 so'm" in lines[1]
+    assert "status 'Sababsiz'" in lines[1] and "(balance +85 000 -> +45 000)" in lines[1]
+    assert lines[2].startswith("- 2026-10-01: 'Pul qaytarildi' (Naqd): -45 000 so'm")
+    # a cancelled charge has a negative "amount" but gives money back: the sign comes from the balance change
+    assert "'Bekor qilingan' in group 'XD Sejong 2', status 'Bekor qilindi': +20 000 so'm" in lines[3]
+    assert "Staff" not in "\n".join(lines)
+
+
+def test_asks_about_money():
+    for text in ("To'lovim nimaga bunday?", "nega qarz chiqyapti", "Почему такой баланс?", "Тўловим қани"):
+        assert asks_about_money(text), text
+    for text in ("Rahmat", "bugun dars bormi?", "ok"):
+        assert not asks_about_money(text), text
+
+
+async def test_match_includes_history(fake_edutizim):
+    lookup = BalanceLookup(client_for(fake_edutizim, branch_ids=[BRANCH_A]))
+    note = await lookup.note_for("chat", "908467800 hikmatillo azimov", "908467800 hikmatillo azimov")
+    assert "Transaction history" in note and "'Daromad' (Naqd): +145 000" in note
+    tx = [r for r in fake_edutizim.seen if r.get("path") == "transactions"][0]
+    assert tx["body"]["studentId"] == STUDENT["_id"] and tx["body"]["sortOrder"] == -1
+    assert tx["headers"]["branch"] == BRANCH_A
+
+
+async def test_followup_question_after_verification(fake_edutizim):
+    clock = [1_800_000_000.0]
+    lookup = BalanceLookup(client_for(fake_edutizim, branch_ids=[BRANCH_A]), clock=lambda: clock[0])
+    assert await lookup.note_for("chat", "To'lovim nimaga bunday?", "") is None  # not verified yet
+    await lookup.note_for("chat", "908467800 hikmatillo azimov", "908467800 hikmatillo azimov")
+    note = await lookup.note_for("chat", "To'lovim nimaga bunday?", "To'lovim nimaga bunday?")
+    assert note and "Hikmatillo Azimov" in note and "Transaction history" in note
+    assert await lookup.note_for("chat", "Rahmat", "Rahmat") is None  # not about money
+    assert await lookup.note_for("other-chat", "To'lovim nimaga bunday?", "") is None  # per chat
+    clock[0] += 25 * 3600
+    assert await lookup.note_for("chat", "To'lovim nimaga bunday?", "") is None  # verification expired
+
+
+async def test_wrong_name_does_not_verify(fake_edutizim):
+    lookup = BalanceLookup(client_for(fake_edutizim, branch_ids=[BRANCH_A]))
+    await lookup.note_for("chat", "908467800 ali valiyev", "908467800 ali valiyev")
+    assert await lookup.note_for("chat", "balansim qancha?", "") is None
