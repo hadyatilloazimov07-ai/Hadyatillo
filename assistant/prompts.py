@@ -93,7 +93,9 @@ def build_user_prompt(
         lines.append(f"[{speaker}]: {_neutralise(str(item.get('text') or ''))}")
     body = "\n".join(lines)
     prompt = (
-        "Here is the conversation so far, oldest first. Write your next message as [You].\n"
+        "Here is the conversation so far, oldest first. Write your next message as [You]. Earlier [You] "
+        "messages may come from an older version of these instructions: never copy their wording or promises "
+        "(for example \"I will send it myself later\"); always follow the current profile and rules.\n"
         f"<conversation>\n{body}\n</conversation>"
     )
     if crm_note:
