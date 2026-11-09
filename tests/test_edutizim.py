@@ -274,3 +274,20 @@ async def test_verified_chats_survive_restart(fake_edutizim, tmp_path):
     restarted = BalanceLookup(client_for(fake_edutizim, branch_ids=[BRANCH_A]), path=path)
     note = await restarted.note_for("chat", "balansim qancha?", "")
     assert note and "Hikmatillo Azimov" in note
+
+
+def test_payment_guidance():
+    from datetime import datetime, timezone
+
+    from assistant.edutizim import payment_guidance
+
+    now = datetime(2026, 10, 20, tzinfo=timezone.utc)
+    text = payment_guidance(TRANSACTIONS, -200000, now)
+    assert "Amount due now: 200 000 so'm" in text
+    assert "lesson price in group 'XD Sejong 2': 20 000 so'm" in text
+    # one charge and one refund in the last 30 days -> 0 net lessons, so no monthly line
+    assert "lessons were charged" not in text
+    text = payment_guidance(TRANSACTIONS[:3], -40000, datetime(2026, 9, 30, tzinfo=timezone.utc))
+    assert "2 lessons were charged, about 40 000 so'm a month" in text
+    assert "about 80 000 so'm" in text
+    assert "Nothing is due now" in payment_guidance(TRANSACTIONS[:3], 45000, datetime(2026, 9, 30, tzinfo=timezone.utc))

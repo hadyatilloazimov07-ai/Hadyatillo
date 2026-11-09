@@ -67,6 +67,7 @@ class StudentBalance:
     student_id: str = ""
     branch: str = ""
     history: List[str] = field(default_factory=list)
+    payment: str = ""
 
 
 def extract_phone(text: str) -> Optional[str]:
@@ -180,6 +181,52 @@ def summarize_transactions(rows: List[Dict[str, Any]]) -> List[str]:
     return lines
 
 
+def _parse(raw: Any) -> Optional[datetime]:
+    try:
+        return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def payment_guidance(rows: List[Dict[str, Any]], balance: float, now: Optional[datetime] = None) -> str:
+    """How much to pay: the debt, the current lesson price and the monthly amount from the last 30 days."""
+    now = now or datetime.now(timezone.utc)
+    charges = [r for r in rows if r.get("type") == "attendance" and _delta(r) < 0]
+    lines = []
+    if balance < 0:
+        lines.append(
+            f"Amount due now: {format_amount(balance)} so'm. Paying exactly this brings the balance to 0."
+        )
+    else:
+        lines.append("Nothing is due now: there is no debt.")
+    if charges:
+        last = charges[-1]
+        price = -_delta(last)
+        group = _name_of(last.get("group")) or "their group"
+        since = now - timedelta(days=30)
+        recent = [r for r in charges if (_parse(r.get("createdAt")) or now) >= since]
+        refunds = [r for r in rows if r.get("type") == "cancelled" and _delta(r) > 0
+                   and (_parse(r.get("createdAt")) or now) >= since]
+        lessons = max(len(recent) - len(refunds), 0)
+        monthly = lessons * price
+        lines.append(f"Current lesson price in group '{group}': {format_amount(price)} so'm per lesson.")
+        if lessons:
+            lines.append(
+                f"In the last 30 days {lessons} lessons were charged, about {format_amount(monthly)} so'm a month."
+            )
+            if balance < 0:
+                lines.append(
+                    f"To clear the debt and also cover the next month: about {format_amount(-balance + monthly)} so'm."
+                )
+            elif price:
+                lines.append(f"The current balance covers about {int(balance // price)} more lessons.")
+    lines.append(
+        "When they ask how much to pay, answer with these numbers: first the amount due now, then the lesson "
+        "price and the approximate monthly amount. Say the monthly amount is approximate."
+    )
+    return "\n".join(lines)
+
+
 class EduTizimClient:
     def __init__(
         self,
@@ -277,6 +324,7 @@ class EduTizimClient:
             try:
                 rows = await self.transactions(result.student_id, result.branch)
                 result.history = summarize_transactions(rows)
+                result.payment = payment_guidance(rows, result.balance)
             except EduTizimError as exc:
                 log.warning("Could not read transactions: %s", exc)
         return result
@@ -299,6 +347,8 @@ def describe_balance(result: Optional[StudentBalance], error: Optional[str] = No
     else:
         state = "zero balance (no debt, nothing prepaid)"
     note = f'Student "{result.full_name}": current balance {result.balance:.0f} so\'m, i.e. {state}.'
+    if result.payment:
+        note += "\n" + result.payment
     if result.history:
         note += (
             "\nTransaction history (oldest first, most recent part only; amounts change the balance by the "
