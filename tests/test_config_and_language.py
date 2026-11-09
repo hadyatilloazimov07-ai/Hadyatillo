@@ -176,3 +176,18 @@ def test_conversation_tag_cannot_be_closed():
     )
     assert prompt.count("</conversation>") == 1
     assert prompt.rstrip().endswith("Their latest message is in English.")
+
+
+def test_payment_card_settings_and_prompt(tmp_path):
+    from datetime import datetime
+
+    from assistant.prompts import build_system_prompt
+
+    s = load_settings(write_env(tmp_path, BASE + "PAYMENT_CARD=8600 1234 5678 9012\nPAYMENT_CARD_HOLDER=Test Holder\n"))
+    assert s.payment_card == "8600123456789012" and s.payment_card_holder == "Test Holder"
+    prompt = build_system_prompt("profile", datetime(2026, 1, 1), s.payment_card, s.payment_card_holder)
+    assert "8600 1234 5678 9012" in prompt and "Test Holder" in prompt and "receipt" in prompt
+    assert "Payment card" not in build_system_prompt("profile", datetime(2026, 1, 1))
+    for bad in ("PAYMENT_CARD=1234\n", "PAYMENT_CARD_HOLDER=Someone\n"):
+        with pytest.raises(ConfigError):
+            load_settings(write_env(tmp_path, BASE + bad))

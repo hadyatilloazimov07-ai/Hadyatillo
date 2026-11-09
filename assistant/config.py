@@ -41,6 +41,8 @@ SETTING_KEYS = (
     "EDUTIZIM_TOKEN",
     "EDUTIZIM_BRANCH_IDS",
     "EDUTIZIM_BASE_URL",
+    "PAYMENT_CARD",
+    "PAYMENT_CARD_HOLDER",
 )
 
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
@@ -77,6 +79,8 @@ class Settings:
     edutizim_token: Optional[str] = field(default=None, repr=False)
     edutizim_branch_ids: Tuple[str, ...] = ()
     edutizim_base_url: str = "https://backend.edutizim.uz/external-api"
+    payment_card: Optional[str] = None
+    payment_card_holder: Optional[str] = None
 
     @property
     def edutizim_enabled(self) -> bool:
@@ -214,6 +218,13 @@ def load_settings(
     if not base_url.startswith("https://"):
         raise ConfigError(f"EDUTIZIM_BASE_URL must start with https:// (check {where})")
 
+    card = re.sub(r"[\s-]", "", get("PAYMENT_CARD"))
+    if card and not re.fullmatch(r"\d{16}", card):
+        raise ConfigError(f"PAYMENT_CARD must be a 16-digit card number (check {where})")
+    holder = get("PAYMENT_CARD_HOLDER").strip() or None
+    if holder and not card:
+        raise ConfigError(f"PAYMENT_CARD_HOLDER is set but PAYMENT_CARD is empty (check {where})")
+
     return Settings(
         bot_token=bot_token,
         owner_id=owner_id,
@@ -233,6 +244,8 @@ def load_settings(
         edutizim_token=edu_token,
         edutizim_branch_ids=branch_ids,
         edutizim_base_url=base_url,
+        payment_card=card or None,
+        payment_card_holder=holder,
     )
 
 

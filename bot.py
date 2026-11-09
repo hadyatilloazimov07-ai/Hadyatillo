@@ -92,7 +92,9 @@ async def run_check(settings: Settings) -> int:
 async def run_try(settings: Settings, text: str) -> int:
     cli = make_claude_cli(settings)
     language = detect_language(text)
-    system_prompt = build_system_prompt(read_profile(settings.profile_path), datetime.now())
+    system_prompt = build_system_prompt(
+        read_profile(settings.profile_path), datetime.now(), settings.payment_card, settings.payment_card_holder
+    )
     crm_note = None
     lookup = make_balance_lookup(settings)
     if lookup is not None:
@@ -132,6 +134,7 @@ async def run_bot(settings: Settings) -> int:
             log.info("Mode: PREVIEW - replies are only shown in the logs (set AUTO_SEND=true to send)")
         log.info("Claude auth: %s", settings.claude_auth_mode)
         log.info("Claude binary: %s", settings.claude_bin)
+        log.info("Payment card for online payments: %s", "set" if settings.payment_card else "not set")
         if settings.edutizim_enabled:
             log.info("EduTizim balance lookup: ON (%s)", settings.edutizim_base_url)
         else:

@@ -249,7 +249,10 @@ class Assistant:
             if self.balance_lookup is not None:
                 recent = "\n".join(i["text"] for i in history[-6:] if i.get("role") == "other")
                 crm_note = await self.balance_lookup.note_for(key, text, recent)
-            system_prompt = build_system_prompt(read_profile(self.settings.profile_path), datetime.fromtimestamp(now))
+            system_prompt = build_system_prompt(
+                read_profile(self.settings.profile_path), datetime.fromtimestamp(now),
+                self.settings.payment_card, self.settings.payment_card_holder,
+            )
             user_prompt = build_user_prompt(history, language, crm_note)
             try:
                 reply = await self.generator.generate(system_prompt, user_prompt)
