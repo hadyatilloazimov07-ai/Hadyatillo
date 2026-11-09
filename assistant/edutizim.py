@@ -188,41 +188,74 @@ def _parse(raw: Any) -> Optional[datetime]:
         return None
 
 
+WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+
+
+def lesson_weekdays(charges: List[Dict[str, Any]], now: datetime) -> List[int]:
+    """Weekdays (0=Monday) with at least two lesson charges in the last 4 weeks."""
+    since = now - timedelta(days=28)
+    counts: Dict[int, int] = {}
+    for row in charges:
+        when = _parse(row.get("createdAt"))
+        if when is not None and when >= since:
+            day = when.astimezone(LOCAL_TZ).weekday()
+            counts[day] = counts.get(day, 0) + 1
+    return sorted(d for d, n in counts.items() if n >= 2)
+
+
+def remaining_lessons(charges: List[Dict[str, Any]], weekdays: List[int], now: datetime) -> List[datetime]:
+    """Lesson dates from today to the end of this month (today only if not charged yet)."""
+    today = now.astimezone(LOCAL_TZ).date()
+    charged_today = any(
+        (_parse(r.get("createdAt")) or now).astimezone(LOCAL_TZ).date() == today for r in charges
+    )
+    days = []
+    day = today
+    while day.month == today.month:
+        if day.weekday() in weekdays and not (day == today and charged_today):
+            days.append(day)
+        day += timedelta(days=1)
+    return days
+
+
 def payment_guidance(rows: List[Dict[str, Any]], balance: float, now: Optional[datetime] = None) -> str:
-    """How much to pay: the debt, the current lesson price and the monthly amount from the last 30 days."""
+    """How much to pay: the debt plus the lessons left until the end of the current month."""
     now = now or datetime.now(timezone.utc)
     charges = [r for r in rows if r.get("type") == "attendance" and _delta(r) < 0]
-    lines = []
-    if balance < 0:
+    debt = -balance if balance < 0 else 0.0
+    lines = [
+        f"Debt now: {format_amount(debt)} so'm." if debt else f"No debt now (balance {_signed(balance)} so'm)."
+    ]
+    if not charges:
+        lines.append("No lesson charges found, so the rest of the month cannot be calculated; give only the debt.")
+        return "\n".join(lines)
+    last = charges[-1]
+    price = -_delta(last)
+    group = _name_of(last.get("group")) or "their group"
+    weekdays = lesson_weekdays(charges, now)
+    lines.append(f"Current lesson price in group '{group}': {format_amount(price)} so'm per lesson.")
+    if not weekdays:
+        lines.append("The lesson days could not be worked out; give the debt and the lesson price only.")
+        return "\n".join(lines)
+    dates = remaining_lessons(charges, weekdays, now)
+    month_cost = len(dates) * price
+    total = max(debt + month_cost - max(balance, 0.0), 0.0)
+    day_names = ", ".join(WEEKDAYS[d] for d in weekdays)
+    if dates:
+        span = f"{dates[0].strftime('%d.%m')} - {dates[-1].strftime('%d.%m.%Y')}"
         lines.append(
-            f"Amount due now: {format_amount(balance)} so'm. Paying exactly this brings the balance to 0."
+            f"Lessons left this month ({day_names}): {len(dates)} lessons ({span}) x {format_amount(price)} = "
+            f"{format_amount(month_cost)} so'm."
         )
     else:
-        lines.append("Nothing is due now: there is no debt.")
-    if charges:
-        last = charges[-1]
-        price = -_delta(last)
-        group = _name_of(last.get("group")) or "their group"
-        since = now - timedelta(days=30)
-        recent = [r for r in charges if (_parse(r.get("createdAt")) or now) >= since]
-        refunds = [r for r in rows if r.get("type") == "cancelled" and _delta(r) > 0
-                   and (_parse(r.get("createdAt")) or now) >= since]
-        lessons = max(len(recent) - len(refunds), 0)
-        monthly = lessons * price
-        lines.append(f"Current lesson price in group '{group}': {format_amount(price)} so'm per lesson.")
-        if lessons:
-            lines.append(
-                f"In the last 30 days {lessons} lessons were charged, about {format_amount(monthly)} so'm a month."
-            )
-            if balance < 0:
-                lines.append(
-                    f"To clear the debt and also cover the next month: about {format_amount(-balance + monthly)} so'm."
-                )
-            elif price:
-                lines.append(f"The current balance covers about {int(balance // price)} more lessons.")
+        lines.append("No lessons are left this month.")
+    if balance > 0:
+        lines.append(f"The prepaid balance {format_amount(balance)} so'm is subtracted.")
+    lines.append(f"TOTAL to pay to cover everything until the end of this month: {format_amount(total)} so'm.")
     lines.append(
-        "When they ask how much to pay, answer with these numbers: first the amount due now, then the lesson "
-        "price and the approximate monthly amount. Say the monthly amount is approximate."
+        "When they ask how much to pay, give the TOTAL until the end of this month and show how it is made up "
+        "(debt + number of lessons left this month x lesson price). Say it is counted by the usual lesson days, "
+        "so holidays or cancelled lessons can change it slightly."
     )
     return "\n".join(lines)
 

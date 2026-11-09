@@ -191,3 +191,14 @@ def test_payment_card_settings_and_prompt(tmp_path):
     for bad in ("PAYMENT_CARD=1234\n", "PAYMENT_CARD_HOLDER=Someone\n"):
         with pytest.raises(ConfigError):
             load_settings(write_env(tmp_path, BASE + bad))
+
+
+def test_clean_reply_drops_english_note_to_self():
+    from assistant.prompts import clean_reply
+
+    leaked = "First reply, so introduce as AI assistant. Give only balance.\n\nAssalomu alaykum, yaxshimisiz? Balansingizda 200 000 so'm qarzdorlik bor."
+    assert clean_reply(leaked) == "Assalomu alaykum, yaxshimisiz? Balansingizda 200 000 so'm qarzdorlik bor."
+    assert clean_reply("Note: answer in Russian.\n\nПривет! Всё хорошо.") == "Привет! Всё хорошо."
+    keep = "Salom! Bugun bo'shmisiz?\n\nErtaga gaplashamiz."
+    assert clean_reply(keep) == keep
+    assert clean_reply("  Hi there  ") == "Hi there"

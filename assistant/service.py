@@ -22,7 +22,7 @@ from .claude_cli import ClaudeCLI, ClaudeError, ClaudeLimitError
 from .config import Settings
 from .edutizim import BalanceLookup, EduTizimClient
 from .language import detect_language
-from .prompts import SKIP_TOKEN, build_system_prompt, build_user_prompt
+from .prompts import SKIP_TOKEN, build_system_prompt, build_user_prompt, clean_reply
 from .store import HistoryStore, JsonFile, RuntimeState, SeenMessages, ensure_private_dir
 
 log = logging.getLogger("assistant")
@@ -267,7 +267,7 @@ class Assistant:
                 await self._alert_error(bot, f"{type(exc).__name__}: {exc}")
                 return Outcome.ERROR
 
-            reply = (reply or "").strip()
+            reply = clean_reply(reply or "")
             if not reply or reply.strip('"').strip() == SKIP_TOKEN:
                 log.info("Chat %s: no reply needed (%s)", chat_id, SKIP_TOKEN)
                 return Outcome.SKIPPED

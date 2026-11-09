@@ -23,7 +23,7 @@ from typing import Dict, List, Optional
 from assistant.claude_cli import ClaudeError
 from assistant.config import PROJECT_DIR, SETTING_KEYS, ConfigError, Settings, env_file_warning, load_settings
 from assistant.language import detect_language
-from assistant.prompts import SKIP_TOKEN, build_system_prompt, build_user_prompt
+from assistant.prompts import SKIP_TOKEN, build_system_prompt, build_user_prompt, clean_reply
 from assistant.service import build_assistant, make_balance_lookup, make_claude_cli, profile_is_empty, read_profile
 from assistant.store import ensure_private_dir
 
@@ -101,7 +101,7 @@ async def run_try(settings: Settings, text: str) -> int:
         crm_note = await lookup.note_for("try", text, text)
     user_prompt = build_user_prompt([{"role": "other", "name": "Friend", "text": text}], language, crm_note)
     try:
-        reply = await cli.generate(system_prompt, user_prompt)
+        reply = clean_reply(await cli.generate(system_prompt, user_prompt))
     except ClaudeError as exc:
         print(f"Claude error: {exc}", file=sys.stderr)
         return 1

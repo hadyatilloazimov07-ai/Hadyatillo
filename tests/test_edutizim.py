@@ -276,18 +276,26 @@ async def test_verified_chats_survive_restart(fake_edutizim, tmp_path):
     assert note and "Hikmatillo Azimov" in note
 
 
-def test_payment_guidance():
+def test_payment_guidance_until_month_end():
     from datetime import datetime, timezone
 
     from assistant.edutizim import payment_guidance
 
-    now = datetime(2026, 10, 20, tzinfo=timezone.utc)
-    text = payment_guidance(TRANSACTIONS, -200000, now)
-    assert "Amount due now: 200 000 so'm" in text
-    assert "lesson price in group 'XD Sejong 2': 20 000 so'm" in text
-    # one charge and one refund in the last 30 days -> 0 net lessons, so no monthly line
-    assert "lessons were charged" not in text
-    text = payment_guidance(TRANSACTIONS[:3], -40000, datetime(2026, 9, 30, tzinfo=timezone.utc))
-    assert "2 lessons were charged, about 40 000 so'm a month" in text
-    assert "about 80 000 so'm" in text
-    assert "Nothing is due now" in payment_guidance(TRANSACTIONS[:3], 45000, datetime(2026, 9, 30, tzinfo=timezone.utc))
+    def lesson(day):  # 10:00 UTC = 15:00 in Tashkent
+        return {"type": "attendance", "amount": -20000, "beforeAmount": 0, "afterAmount": -20000,
+                "createdAt": f"2026-11-{day:02d}T10:00:00.000Z", "group": {"name": "XD Sejong 2"}}
+
+    october = [dict(lesson(1), createdAt=f"2026-10-{d:02d}T10:00:00.000Z") for d in (26, 28, 30)]
+    rows = october + [lesson(d) for d in (2, 4, 6)]  # Mon/Wed/Fri lessons
+    now = datetime(2026, 11, 9, 4, 0, tzinfo=timezone.utc)  # Monday morning, no lesson charged yet
+    text = payment_guidance(rows, -200000, now)
+    assert "Debt now: 200 000 so'm." in text
+    assert "(Monday, Wednesday, Friday): 10 lessons (09.11 - 30.11.2026) x 20 000 = 200 000 so'm" in text
+    assert "TOTAL to pay to cover everything until the end of this month: 400 000 so'm." in text
+
+    charged_today = rows + [lesson(9)]
+    assert "9 lessons (11.11 - 30.11.2026)" in payment_guidance(charged_today, -220000, datetime(2026, 11, 9, 12, tzinfo=timezone.utc))
+
+    prepaid = payment_guidance(rows, 50000, now)
+    assert "No debt now" in prepaid and "TOTAL to pay to cover everything until the end of this month: 150 000 so'm." in prepaid
+    assert "cannot be calculated" in payment_guidance([], -1000, now)
