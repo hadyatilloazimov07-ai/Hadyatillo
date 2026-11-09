@@ -202,3 +202,17 @@ def test_clean_reply_drops_english_note_to_self():
     keep = "Salom! Bugun bo'shmisiz?\n\nErtaga gaplashamiz."
     assert clean_reply(keep) == keep
     assert clean_reply("  Hi there  ") == "Hi there"
+
+
+def test_contact_phones(tmp_path):
+    from datetime import datetime
+
+    from assistant.prompts import build_system_prompt
+
+    s = load_settings(write_env(tmp_path, BASE + "MOLIYA_NOMER=901112233\nSERVIS_NOMER=+998 93 444 55 66\n"))
+    assert s.finance_phone == "+998 90 111 22 33" and s.service_phone == "+998 93 444 55 66"
+    prompt = build_system_prompt("p", datetime(2026, 1, 1), finance_phone=s.finance_phone, service_phone=s.service_phone)
+    assert "Finance department phone: +998 90 111 22 33" in prompt and "Service phone: +998 93 444 55 66" in prompt
+    assert "Contact numbers" not in build_system_prompt("p", datetime(2026, 1, 1))
+    with pytest.raises(ConfigError):
+        load_settings(write_env(tmp_path, BASE + "MOLIYA_NOMER=12345\n"))

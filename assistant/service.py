@@ -252,6 +252,7 @@ class Assistant:
             system_prompt = build_system_prompt(
                 read_profile(self.settings.profile_path), datetime.fromtimestamp(now),
                 self.settings.payment_card, self.settings.payment_card_holder,
+                self.settings.finance_phone, self.settings.service_phone,
             )
             user_prompt = build_user_prompt(history, language, crm_note)
             try:

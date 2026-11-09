@@ -93,7 +93,8 @@ async def run_try(settings: Settings, text: str) -> int:
     cli = make_claude_cli(settings)
     language = detect_language(text)
     system_prompt = build_system_prompt(
-        read_profile(settings.profile_path), datetime.now(), settings.payment_card, settings.payment_card_holder
+        read_profile(settings.profile_path), datetime.now(), settings.payment_card, settings.payment_card_holder,
+        settings.finance_phone, settings.service_phone,
     )
     crm_note = None
     lookup = make_balance_lookup(settings)
@@ -135,6 +136,7 @@ async def run_bot(settings: Settings) -> int:
         log.info("Claude auth: %s", settings.claude_auth_mode)
         log.info("Claude binary: %s", settings.claude_bin)
         log.info("Payment card for online payments: %s", "set" if settings.payment_card else "not set")
+        log.info("Finance phone: %s; service phone: %s", settings.finance_phone or "not set", settings.service_phone or "not set")
         if settings.edutizim_enabled:
             log.info("EduTizim balance lookup: ON (%s)", settings.edutizim_base_url)
         else:

@@ -43,6 +43,8 @@ SETTING_KEYS = (
     "EDUTIZIM_BASE_URL",
     "PAYMENT_CARD",
     "PAYMENT_CARD_HOLDER",
+    "MOLIYA_NOMER",
+    "SERVIS_NOMER",
 )
 
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
@@ -81,6 +83,8 @@ class Settings:
     edutizim_base_url: str = "https://backend.edutizim.uz/external-api"
     payment_card: Optional[str] = None
     payment_card_holder: Optional[str] = None
+    finance_phone: Optional[str] = None
+    service_phone: Optional[str] = None
 
     @property
     def edutizim_enabled(self) -> bool:
@@ -225,6 +229,19 @@ def load_settings(
     if holder and not card:
         raise ConfigError(f"PAYMENT_CARD_HOLDER is set but PAYMENT_CARD is empty (check {where})")
 
+    def phone(key: str) -> Optional[str]:
+        digits = re.sub(r"\D", "", get(key))
+        if not digits:
+            return None
+        if len(digits) == 9:
+            digits = "998" + digits
+        if not re.fullmatch(r"998\d{9}", digits):
+            raise ConfigError(f"{key} must be an Uzbek phone number like 974422700 (check {where})")
+        return f"+998 {digits[3:5]} {digits[5:8]} {digits[8:10]} {digits[10:12]}"
+
+    finance_phone = phone("MOLIYA_NOMER")
+    service_phone = phone("SERVIS_NOMER")
+
     return Settings(
         bot_token=bot_token,
         owner_id=owner_id,
@@ -246,6 +263,8 @@ def load_settings(
         edutizim_base_url=base_url,
         payment_card=card or None,
         payment_card_holder=holder,
+        finance_phone=finance_phone,
+        service_phone=service_phone,
     )
 
 
